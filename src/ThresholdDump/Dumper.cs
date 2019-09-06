@@ -1,0 +1,87 @@
+﻿// Licensed to the .NET Foundation under one or more agreements.
+// The .NET Foundation licenses this file to you under the MIT license.
+// See the LICENSE file in the project root for more information.
+
+using Microsoft.Diagnostics.Tools.RuntimeClient;
+using System;
+using System.Diagnostics;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Threading.Tasks;
+
+namespace Microsoft.Diagnostics.Tools.Dump
+{
+    internal static partial class Dumper
+    {
+        /// <summary>
+        /// The dump type determines the kinds of information that are collected from the process.
+        /// </summary>
+        public enum DumpTypeOption
+        {
+            Heap,       // A large and relatively comprehensive dump containing module lists, thread lists, all 
+                        // stacks, exception information, handle information, and all memory except for mapped images.
+            Mini        // A small dump containing module lists, thread lists, exception information and all stacks.
+        }
+
+        internal static async Task<int> Collect(int processId, bool diag, DumpTypeOption type)
+        {
+            if (processId == 0)
+            {
+                Console.Error.WriteLine("ProcessId is required.");
+                return 1;
+            }
+
+            try
+            {
+                // Build timestamp based file path
+                string timestamp = $"{DateTime.Now:yyyyMMdd_HHmmss}";
+                var output = Path.Combine(Directory.GetCurrentDirectory(), RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? $"dump_{timestamp}.dmp" : $"core_{timestamp}");
+                // Make sure the dump path is NOT relative. This path could be sent to the runtime 
+                // process on Linux which may have a different current directory.
+                output = Path.GetFullPath(output);
+
+                // Display the type of dump and dump path
+                string dumpTypeMessage = type == DumpTypeOption.Mini ? "minidump" : "minidump with heap";
+                Console.Out.WriteLine($"Writing {dumpTypeMessage} to {output}");
+
+                if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+                {
+                    // Get the process
+                    Process process = Process.GetProcessById(processId);
+
+                    await Windows.CollectDumpAsync(process, output, type);
+                }
+                else if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+                {
+                    DiagnosticsHelpers.DumpType dumpType = type == DumpTypeOption.Heap ? DiagnosticsHelpers.DumpType.WithHeap : DiagnosticsHelpers.DumpType.Normal;
+
+                    // Send the command to the runtime to initiate the core dump
+                    var hr = DiagnosticsHelpers.GenerateCoreDump(processId, output, dumpType, diag);
+                    if (hr != 0)
+                    {
+                        throw new InvalidOperationException($"Core dump generation FAILED 0x{hr:X8}");
+                    }
+                }
+                else
+                {
+                    throw new PlatformNotSupportedException($"Unsupported operating system: {RuntimeInformation.OSDescription}");
+                }
+            }
+            catch (Exception ex) when
+                (ex is FileNotFoundException ||
+                 ex is DirectoryNotFoundException ||
+                 ex is UnauthorizedAccessException ||
+                 ex is PlatformNotSupportedException ||
+                 ex is InvalidDataException ||
+                 ex is InvalidOperationException ||
+                 ex is NotSupportedException)
+            {
+                Console.Error.WriteLine($"{ex.Message}");
+                return 1;
+            }
+
+            Console.Out.WriteLine($"Complete");
+            return 0;
+        }
+    }
+}

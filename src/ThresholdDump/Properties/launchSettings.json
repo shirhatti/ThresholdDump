@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "ThresholdDump": {
+      "commandName": "Project",
+      "commandLineArgs": "--process-id 13324"
+    }
+  }
+}
