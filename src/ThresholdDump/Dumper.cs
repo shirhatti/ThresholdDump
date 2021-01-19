@@ -2,35 +2,36 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using Microsoft.Diagnostics.Tools.RuntimeClient;
+using Microsoft.Diagnostics.NETCore.Client;
 using System;
+using System.CommandLine;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
-using System.Threading.Tasks;
 
 namespace Microsoft.Diagnostics.Tools.Dump
 {
-    internal static partial class Dumper
+    public partial class Dumper
     {
         /// <summary>
         /// The dump type determines the kinds of information that are collected from the process.
         /// </summary>
         public enum DumpTypeOption
         {
+            Full,       // The largest dump containing all memory including the module images.
+
             Heap,       // A large and relatively comprehensive dump containing module lists, thread lists, all 
                         // stacks, exception information, handle information, and all memory except for mapped images.
-            Mini        // A small dump containing module lists, thread lists, exception information and all stacks.
+
+            Mini,       // A small dump containing module lists, thread lists, exception information and all stacks.
         }
 
-        internal static async Task<int> Collect(int processId, bool diag, DumpTypeOption type)
+        public Dumper()
         {
-            if (processId == 0)
-            {
-                Console.Error.WriteLine("ProcessId is required.");
-                return 1;
-            }
+        }
 
+        public int Collect(int processId, bool diag, DumpTypeOption type)
+        {
             try
             {
                 // Build timestamp based file path
@@ -41,30 +42,47 @@ namespace Microsoft.Diagnostics.Tools.Dump
                 output = Path.GetFullPath(output);
 
                 // Display the type of dump and dump path
-                string dumpTypeMessage = type == DumpTypeOption.Mini ? "minidump" : "minidump with heap";
-                Console.Out.WriteLine($"Writing {dumpTypeMessage} to {output}");
+                string dumpTypeMessage = null;
+                switch (type)
+                {
+                    case DumpTypeOption.Full:
+                        dumpTypeMessage = "full";
+                        break;
+                    case DumpTypeOption.Heap:
+                        dumpTypeMessage = "dump with heap";
+                        break;
+                    case DumpTypeOption.Mini:
+                        dumpTypeMessage = "dump";
+                        break;
+                }
+                Console.WriteLine($"Writing {dumpTypeMessage} to {output}");
 
                 if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
                 {
                     // Get the process
                     Process process = Process.GetProcessById(processId);
-
-                    await Windows.CollectDumpAsync(process, output, type);
-                }
-                else if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
-                {
-                    DiagnosticsHelpers.DumpType dumpType = type == DumpTypeOption.Heap ? DiagnosticsHelpers.DumpType.WithHeap : DiagnosticsHelpers.DumpType.Normal;
-
-                    // Send the command to the runtime to initiate the core dump
-                    var hr = DiagnosticsHelpers.GenerateCoreDump(processId, output, dumpType, diag);
-                    if (hr != 0)
-                    {
-                        throw new InvalidOperationException($"Core dump generation FAILED 0x{hr:X8}");
-                    }
+                    Windows.CollectDump(process, output, type);
                 }
                 else
                 {
-                    throw new PlatformNotSupportedException($"Unsupported operating system: {RuntimeInformation.OSDescription}");
+                    var client = new DiagnosticsClient(processId);
+
+                    DumpType dumpType = DumpType.Normal;
+                    switch (type)
+                    {
+                        case DumpTypeOption.Full:
+                            dumpType = DumpType.Full;
+                            break;
+                        case DumpTypeOption.Heap:
+                            dumpType = DumpType.WithHeap;
+                            break;
+                        case DumpTypeOption.Mini:
+                            dumpType = DumpType.Normal;
+                            break;
+                    }
+
+                    // Send the command to the runtime to initiate the core dump
+                    client.WriteDump(dumpType, output, diag);
                 }
             }
             catch (Exception ex) when
@@ -72,15 +90,17 @@ namespace Microsoft.Diagnostics.Tools.Dump
                  ex is DirectoryNotFoundException ||
                  ex is UnauthorizedAccessException ||
                  ex is PlatformNotSupportedException ||
+                 ex is UnsupportedCommandException ||
                  ex is InvalidDataException ||
                  ex is InvalidOperationException ||
-                 ex is NotSupportedException)
+                 ex is NotSupportedException ||
+                 ex is DiagnosticsClientException)
             {
                 Console.Error.WriteLine($"{ex.Message}");
                 return 1;
             }
 
-            Console.Out.WriteLine($"Complete");
+            Console.WriteLine($"Complete");
             return 0;
         }
     }

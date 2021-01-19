@@ -1,5 +1,5 @@
-﻿using Microsoft.Diagnostics.Tools.Dump;
-using Microsoft.Diagnostics.Tools.RuntimeClient;
+﻿using Microsoft.Diagnostics.NETCore.Client;
+using Microsoft.Diagnostics.Tools.Dump;
 using Microsoft.Diagnostics.Tracing;
 using Microsoft.Diagnostics.Tracing.Parsers;
 using System;
@@ -7,6 +7,7 @@ using System.Collections.Generic;
 using System.Diagnostics.Tracing;
 using System.Linq;
 using System.Threading.Tasks;
+using static Microsoft.Diagnostics.Tools.Dump.Dumper;
 
 namespace ThresholdDump
 {
@@ -23,31 +24,27 @@ namespace ThresholdDump
             {
                 throw new ArgumentNullException(nameof(processId));
             }
-
-            if (!EventPipeClient.ListAvailablePorts().Contains(processId.Value))
+            if (!DiagnosticsClient.GetPublishedProcesses().Contains(processId.Value))
             {
-                throw new ArgumentException($"{nameof(processId)} is not a valid .NET Core process");
+                throw new ArgumentException($"{nameof(processId)} is not a valid .NET process");
             }
 
-            var providerList = new List<Provider>()
+            var providerList = new List<EventPipeProvider>()
                 {
-                    new Provider(name: "System.Runtime",
-                                keywords: ulong.MaxValue,
+                    new EventPipeProvider(name: "System.Runtime",
+                                keywords: long.MaxValue,
                                 eventLevel: EventLevel.Informational,
-                                filterData: "EventCounterIntervalSec=1"),
-                    new Provider(name: "Microsoft-Windows-DotNETRuntime",
-                                 keywords: (ulong)ClrTraceEventParser.Keywords.GC,
+                                arguments: new Dictionary<string, string>() { { "EventCounterIntervalSec", "1" } }),
+                    new EventPipeProvider(name: "Microsoft-Windows-DotNETRuntime",
+                                 keywords: (long)ClrTraceEventParser.Keywords.GC,
                                  eventLevel: EventLevel.Verbose)
                 };
+            var diagnosticsClient = new DiagnosticsClient(processId.Value);
+            var session = diagnosticsClient.StartEventPipeSession(
+                            providers: providerList,
+                            requestRundown: false);
 
-            var configuration = new SessionConfigurationV2(
-                circularBufferSizeMB: 100,
-                format: EventPipeSerializationFormat.NetTrace,
-                requestRundown: false,
-                providers: providerList);
-
-            var stream = EventPipeClient.CollectTracing2(processId.Value, configuration, out var sessionId);
-            var source = new EventPipeEventSource(stream);
+            var source = new EventPipeEventSource(session.EventStream);
             var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             Console.CancelKeyPress += delegate (object sender, ConsoleCancelEventArgs e)
             {
@@ -78,13 +75,13 @@ namespace ThresholdDump
             }
             finally
             {
+                session.Dispose();
                 source.Dispose();
-                EventPipeClient.StopTracing(processId.Value, sessionId);
             }
 
             if (tcs.Task.IsCompletedSuccessfully)
             {
-                await Dumper.Collect(processId.Value, true, Dumper.DumpTypeOption.Mini);
+                new Dumper().Collect(processId.Value, false, DumpTypeOption.Mini);
             }
         }
     }
